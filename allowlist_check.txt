@@ -1,0 +1,2 @@
+src:fuzzme.cc
+fun:*check_for_ae*

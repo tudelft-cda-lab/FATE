@@ -1,0 +1,16 @@
+numpy~=1.19.4
+scipy~=1.5.4
+scikit-learn~=0.23.2
+idx2numpy~=1.2.3
+IPython~=7.19.0
+six~=1.15.0
+pydotplus~=2.0.2
+Cython
+jinja2~=2.11.2
+pandas~=1.1.4
+matplotlib~=3.3.3
+annoy~=1.17.0
+scann~=1.2.1
+tqdm~=4.60.0
+gurobipy~=9.1.2
+seaborn~=0.11.1

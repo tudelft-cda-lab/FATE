@@ -1,0 +1,25 @@
+inline bool file_exists (const std::string& name) {
+  struct stat buffer;
+  return (stat (name.c_str(), &buffer) == 0);
+}
+
+void write_if_not_exist(const std::string& filename, double fuzzed[], int expected, int actual,
+                        int num, double probs[]) {
+    std::string filebase = "{{ adv_path }}/";
+    std::string full_filename = filebase.append(filename);
+	if (file_exists(full_filename)) {
+        return;
+    }
+
+    ofstream myfile;
+    myfile.open(full_filename);
+    for (int i = 0; i < {{ num_features }}; i++) {
+        myfile << std::setprecision(15) << fuzzed[i] << ",";
+    }
+    myfile << to_string(expected) << "," << to_string(actual) << "," << to_string(num);
+
+	for (int i = 0; i < {{ num_classes }}; i++) {
+		myfile << "," << std::setprecision(15) << probs[i];
+	}
+    myfile.close();
+}

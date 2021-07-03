@@ -1,0 +1,30 @@
+extern "C" int LLVMFuzzerInitialize(int *argc, char ***argv) {
+    {% if use_thresholds %}
+    {{ threshold_init }}
+    {% endif %}
+    int num_args = *argc;
+    char **args = *argv;
+    check_num = atoi(args[1]);
+    int num_features = atoi(args[2]);
+    original_class = atoi(args[3]);
+    int start_index = 4;
+    int num_fuzzer_args = num_args - num_features - start_index;
+    vector<double> original(num_features, 0.0);
+
+    for (int i = start_index; i < start_index + num_features; i++) {
+        original[i-start_index] = atof(args[i]);
+    }
+    original_features = original;
+
+    char** new_argv = 0;
+    new_argv = new char*[num_fuzzer_args+1];
+    new_argv[0] = args[0];
+    for(int i = 0; i < num_fuzzer_args; i++) {
+        new_argv[i+1] = args[start_index+num_features+i];
+    }
+
+    *argv = new_argv;
+    *argc = num_fuzzer_args;
+
+    return 0;
+}

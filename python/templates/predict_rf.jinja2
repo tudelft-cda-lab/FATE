@@ -1,0 +1,27 @@
+int predict(double probs[]) {
+	double greatest_sum = -0.1;
+	int greatest_class = -1;
+	for (int i = 0; i < {{ num_classes }}; i++) {
+		if (probs[i] > greatest_sum) {
+			greatest_sum = probs[i];
+			greatest_class = i;
+		}
+	}
+	return greatest_class;
+}
+
+double* calc_class_prob(double** arr, int num_trees) {
+	// Insert all elements in hash.
+	static double sums[{{ num_classes }}];
+	for (int i = 0; i < {{ num_classes }}; i++) {
+		sums[i] = 0.0;
+	}
+
+	for (int i = 0; i < num_trees; i++) {
+		auto counts = arr[i];
+		for (int ii = 0; ii < {{ num_classes }}; ii++) {
+			sums[ii] = sums[ii] + (counts[ii] / (double)num_trees);
+		}
+	}
+	return sums;
+}

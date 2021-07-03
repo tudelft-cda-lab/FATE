@@ -1,0 +1,220 @@
+{% include 'templates/base.jinja2' %}
+int ppp = 0;
+int ddd = 0;
+double min_e = {{ small_perturbation }};
+
+{% if fuzz == 'ONE' %}
+vector<double> original_features;
+int check_num;
+int original_class;
+double best_ae_dist = 1.1;
+bool was_ae = false;
+double cur_ae_dist = 1.1;
+{#{% else %}#}
+{#bool ir(double actual, double reference) {#}
+{#    return actual >= max(0.0,reference-{{ epsilon }}) && actual <= min(1.0, reference+{{ epsilon }});#}
+{# } #}
+{% endif %}
+{% include 'templates/af.jinja2' %}
+
+{% if forest_type == 'RF' %}
+{% include 'templates/predict_rf.jinja2' %}
+{% endif %}
+{% if forest_type == 'GB' %}
+{% include 'templates/predict_gb.jinja2' %}
+{% endif %}
+{{ tree_functions }}
+{{ predict_probs }}
+
+{#{% include 'templates/distance_linf.jinja2' %}#}
+
+{% include 'templates/mutate.jinja2' %}
+
+{% if fuzz == 'ONE' %}
+{% include 'templates/initialize.jinja2' %}
+{% endif %}
+
+{{ check_functions }}
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
+    if (Size != {{ expected_size }}) {
+        {% if not use_custom_mutator %}
+        return 0;
+        {% else %}
+        if (Size != 0) {
+            printf("size %ld\n", Size);
+            abort();
+        }
+        return 0;
+        {% endif %}
+    }
+    double fuzzed_features[{{ num_features }}];
+    int count = 0;
+    while (count < Size / sizeof(double)) {
+        fuzzed_features[count] = *(double *)(Data + count*sizeof(double));
+        count++;
+    }
+{#    printf("new %d\n", 1);#}
+{#    for (int i = 0; i < {{ num_features }}; i++) {#}
+{#        printf("Fuzzed feature %d: %f (%f)\n", i, fuzzed_features[i], original_features[i]);#}
+{#    }#}
+    auto probs = predict_probs(fuzzed_features);
+{#    printf("new %d\n", 1);#}
+{#    for (int i = 0; i < {{ num_features }}; i++) {#}
+{#        printf("Fuzzed feature %d: %f (%f)\n", i, fuzzed_features[i], original_features[i]);#}
+{#    }#}
+    int fuzzed_class = predict(probs);
+    was_ae = fuzzed_class != original_class;
+{{ check_function_calls }}
+    if ((double) fuzzed_class - probs[0] == -10000.42) {
+        printf("never happens %d\n", ppp);
+        printf("never happens 2 %d\n", ddd);
+    }
+    return 0;
+}
+{% if test_outside_fuzzer %}
+int index_to_replace(double distances[], double cur_dist) {
+    int res = -1;
+    double largest_dist = 0.0;
+    for (int i = 0; i < {{ population_size }}; i++) {
+        if (distances[i] > cur_dist && distances[i] > largest_dist) {
+            res = i;
+            largest_dist = distances[i];
+        }
+    }
+    return res;
+}
+
+uint8_t* read_file(const char * filename) {
+    // Reading size of file
+    FILE *file = fopen(filename, "r+");
+    if (file == NULL) return NULL;
+    fseek(file, 0, SEEK_END);
+    long int size = ftell(file);
+    fclose(file);
+    // Reading data to array of unsigned chars
+    file = fopen(filename, "r+");
+    unsigned char * in = (unsigned char *) malloc(size);
+    int bytes_read = fread(in, sizeof(unsigned char), size, file);
+    fclose(file);
+    return in;
+{#    double fs[{{ num_features }}];#}
+{#    int count = 0;#}
+{#    while (count < {{ num_features }}) {#}
+{#        fs[count] = *(double *)(in + count*sizeof(double));#}
+{#        count++;#}
+{#    }#}
+{##}
+{#    free(in);#}
+{#    return fs;#}
+}
+
+int main(int argc, char **argv) {
+    std::uniform_int_distribution<int> num_mut(1, {{ mutation_depth }}); // uniform, unbiased
+    std::uniform_int_distribution<int> pop_dist(0, {{ population_size }}-1); // uniform, unbiased
+    LLVMFuzzerInitialize(&argc, &argv);
+    using std::chrono::high_resolution_clock;
+    using std::chrono::duration_cast;
+    using std::chrono::duration;
+    using std::chrono::milliseconds;
+
+    int Size = {{ num_features }}*sizeof(double);
+    uint8_t OrigData[Size];
+    for (int i = 0; i < {{ num_features }}; i++) {
+        ((double *)(OrigData + i*sizeof(double)))[0] = original_features[i];
+    }
+
+    int num_input_corpus = 0;
+    uint8_t** input_corpus = 0;
+{#    corpus initialization has a weird bug of significantly decreasing AE quality, whether the
+code is reached or not. #}
+{#    if (argc > 0) {#}
+{#        for (const auto & entry : filesystem::directory_iterator(argv[1])) {#}
+{#            num_input_corpus++;#}
+{#        }#}
+{#        input_corpus = new uint8_t*[num_input_corpus];#}
+{##}
+{#        int k = 0;#}
+{#        for (const auto & entry : filesystem::directory_iterator(argv[1])) {#}
+{#            input_corpus[k] = read_file(entry.path().c_str());#}
+{#            k++;#}
+{#        }#}
+{#    }#}
+    auto t1 = high_resolution_clock::now();
+
+    uint8_t** population = 0;
+    population = new uint8_t*[{{ population_size }}];
+    for (int i = 0; i < {{ population_size }}; i++) {
+        uint8_t Entry[Size];
+        memcpy(Entry, OrigData, Size);
+        population[i] = Entry;
+    }
+    double population_dist[{{ population_size }}] = {1.0};
+    std::fill_n(population_dist, {{ population_size }}, 1.0);
+
+    int iter = 0;
+    while (true) {
+        auto t2 = high_resolution_clock::now();
+
+        /* Getting number of milliseconds as an integer. */
+        auto ms_int = duration_cast<milliseconds>(t2 - t1);
+        if (ms_int > std::chrono::milliseconds({{ time_seconds }}*1000)) {
+            break;
+        }
+        iter++;
+        if (iter > {{ num_runs }}) {
+            break;
+        }
+        uint8_t Data[Size];
+        if (iter <= num_input_corpus) {
+            memcpy(Data, input_corpus[iter-1], Size);
+        } else {
+            memcpy(Data, population[pop_dist(en)], Size);
+        }
+        memcpy(Data, population[pop_dist(en)], Size);
+
+        for (int nm = 0; nm < num_mut(en); nm++) {
+            if (uniform_dist(en) < {{ crossover_chance }}) {
+                uint8_t CrossoverData[Size];
+                if (uniform_dist(en) < {{ crossover_random_chance }}) {
+                    for (int j = 0; j < {{ num_features }}; j++) {
+                        ((double *)(CrossoverData + j*sizeof(double)))[0] = uniform_dist(en);
+                    }
+                } else {
+                    memcpy(CrossoverData, population[pop_dist(en)], Size);
+                }
+                uint8_t indata[Size];
+                memcpy(indata, Data, Size);
+                LLVMFuzzerCustomCrossOver(indata, Size, CrossoverData, Size, Data, Size, en());
+            } else {
+                LLVMFuzzerCustomMutator(Data, Size, Size, en());
+            }
+        }
+        LLVMFuzzerTestOneInput(Data, Size);
+        int itr = index_to_replace(population_dist, cur_ae_dist);
+        if (itr != -1) {
+            memcpy(population[itr], Data, Size);
+        }
+{#        if (iter == num_input_corpus && num_input_corpus > 1) {#}
+{#            // Make sure that the original data ends up in the population#}
+{#            memcpy(population[pop_dist(en)], OrigData, Size);#}
+{#        }#}
+{#        if (cur_ae_dist < best_dist) {#}
+{#            memcpy(BestData, Data, Size);#}
+{#            best_dist = cur_ae_dist;#}
+{#        }#}
+    }
+    auto t3 = high_resolution_clock::now();
+
+    /* Getting number of milliseconds as an integer. */
+    auto ms_int = duration_cast<milliseconds>(t3 - t1);
+
+    /* Getting number of milliseconds as a double. */
+{#    duration<double, std::milli> ms_double = t2 - t1;#}
+
+    std::cout << "Performed " << iter << " runs in " << (double)ms_int.count()/1000 << " seconds.\n";
+{#    std::cout << ms_double.count() << "ms";#}
+    return 0;
+}
+{% endif %}
+{% raw %}
+{% endraw %}

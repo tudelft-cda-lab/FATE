@@ -1,0 +1,125 @@
+{% include 'templates/base.jinja2' %}
+{##ifdef __AFL_HAVE_MANUAL_CONTROL#}
+{#__AFL_FUZZ_INIT();#}
+{##endif#}
+double best_ae_dist = 1.1;
+int ppp = 0;
+int ddd = 0;
+double min_e = {{ small_perturbation }};
+
+{% if fuzz == 'ONE' %}
+vector<double> original_features;
+int check_num;
+int original_class;
+{#{% else %}#}
+{#bool ir(double actual, double reference) {#}
+{#    return actual >= max(0.0,reference-{{ epsilon }}) && actual <= min(1.0, reference+{{ epsilon }});#}
+{# } #}
+{% endif %}
+{% include 'templates/af.jinja2' %}
+
+{% if forest_type == 'RF' %}
+{% include 'templates/predict_rf.jinja2' %}
+{% endif %}
+{% if forest_type == 'GB' %}
+{% include 'templates/predict_gb.jinja2' %}
+{% endif %}
+{{ tree_functions }}
+{{ predict_probs }}
+
+std::string getEnvVar( std::string const & key ) {
+    char * val = getenv( key.c_str() );
+    return val == NULL ? std::string("") : std::string(val);
+}
+
+
+template <typename Out>
+void split(const std::string &s, char delim, Out result) {
+    std::istringstream iss(s);
+    std::string item;
+    while (std::getline(iss, item, delim)) {
+        *result++ = item;
+    }
+}
+
+std::vector<std::string> split(const std::string &s, char delim) {
+    std::vector<std::string> elems;
+    split(s, delim, std::back_inserter(elems));
+    return elems;
+}
+
+double distance_linf(double fuzzed[]) {
+    double max_diff = 0.0;
+    for (int i = 0; i < {{ num_features }}; i++) {
+        double f_original = original_features[i];
+        double f_fuzzed = fuzzed[i];
+        double diff = abs(f_original - f_fuzzed);
+        if (diff > max_diff) {
+            max_diff = diff;
+        }
+    }
+    return max_diff;
+}
+
+{#{% include 'templates/distance_linf.jinja2' %}#}
+
+{#{% include 'templates/mutate.jinja2' %}#}
+
+{#{% if fuzz == 'ONE' %}#}
+{#{% include 'templates/initialize.jinja2' %}#}
+{#{% endif %}#}
+
+{{ check_functions }}
+
+int main() {
+    check_num = stoi(getEnvVar("CHECK_NUM"));
+    int num_features = stoi(getEnvVar("NUM_FEATURES"));
+    original_class = stoi(getEnvVar("ORIGINAL_CLASS"));
+    auto of = getEnvVar("ORIGINAL_FEATURES");
+    auto splitted_of = split(of, ' ');
+    vector<double> original(num_features, 0.0);
+
+    for (int i = 0; i < num_features; i++) {
+        original[i] = stod(splitted_of[i]);
+    }
+    original_features = original;
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+    __AFL_INIT();
+#endif
+    unsigned char Data[{{ expected_size }}];
+    while (__AFL_LOOP({{ num_cycles_in_loop }})) {
+{#        int Size = __AFL_FUZZ_TESTCASE_LEN;#}
+        // printf("Size: %d\n", Size);
+        size_t Size;
+        Size = fread(Data, 1, {{ expected_size }}, stdin);
+        if (Size != {{ expected_size }}) {
+            {% if not use_custom_mutator %}
+            continue;
+            {% else %}
+            if (Size != 0) {
+                printf("size %ld\n", Size);
+                printf("digit %d\n", nnn);
+                abort();
+            }
+            {% endif %}
+        }
+        // printf("I am here %d\n", 1);
+        double fuzzed_features[{{ num_features }}];
+        int count = 0;
+        while (count < Size / sizeof(double)) {
+            fuzzed_features[count] = *(double *)(Data + count*sizeof(double));
+            count++;
+        }
+
+        auto probs = predict_probs(fuzzed_features);
+        int fuzzed_class = predict(probs);
+
+        {{ check_function_calls }}
+        if ((double) fuzzed_class - probs[0] == -10000.42) {
+            printf("never happens %d\n", ppp);
+            printf("never happens 2 %d\n", ddd);
+        }
+    }
+    return 0;
+}{% raw %}
+{% endraw %}

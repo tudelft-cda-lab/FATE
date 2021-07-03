@@ -1,0 +1,68 @@
+int predict(double probs[]) {
+	double greatest_sum = probs[0];
+	int greatest_class = 0;
+	for (int i = 0; i < {{ num_classes }}; i++) {
+		if (probs[i] > greatest_sum) {
+			greatest_sum = probs[i];
+			greatest_class = i;
+		}
+	}
+    // printf("Greatest was %d\n", greatest_class);
+	return greatest_class;
+}
+
+{% if nc == 1 %}
+double log_likelihood(double v) {
+    // return np.exp(val)/(1+np.exp(val))
+
+    double e = exp(v);
+    return e/(1+e);
+}
+{% endif %}
+{% if nc != 1 %}
+double* softmax(double* decisions) {
+    // s = sum([np.exp(v) for v in vals])
+    // return [np.exp(v)/s for v in vals]
+
+    static double res[{{ nc }}];
+    double s = 0.0;
+    for (int i = 0; i < {{ nc }}; i++) {
+        s = s + exp(decisions[i]);
+    }
+    for (int i = 0; i < {{ nc }}; i++) {
+        res[i] = exp(decisions[i])/s;
+        // printf("Res %d: %f\n", i, res[i]);
+    }
+    return res;
+}
+{% endif %}
+
+double* calc_class_prob(double** arr, int num_trees) {
+    {% if nc == 1 %}
+    double decisions[{{ nc }}] = {{ initial_prediction }};
+    {% endif %}
+    {% if nc != 1 %}
+    static double decisions[{{ nc }}];
+    {{ initial_prediction }}
+    {% endif %}
+
+	for (int i = 0; i < num_trees; i++) {
+		auto counts = arr[i];
+        for (int ii = 0; ii < {{ nc }}; ii++) {
+            decisions[ii] = decisions[ii] + ({{ learning_rate }} * counts[ii]);
+        }
+	}
+    for (int i = 0; i < {{ nc }}; i++) {
+        // printf("decision %d: %f\n", i, decisions[i]);
+    }
+    {% if nc == 1 %}
+    double l = log_likelihood(decisions[0]);
+    static double sums [2];
+    sums[0] = 1.0-l;
+    sums[1] = l;
+    return sums;
+    {% endif %}
+    {% if nc != 1 %}
+    return softmax(decisions);
+    {% endif %}
+}

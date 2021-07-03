@@ -1,0 +1,329 @@
+{% if fuzzer == 'AFL' %}
+{% include 'templates/base.jinja2' %}
+int ppp = 0;
+int ddd = 0;
+double min_e = 1e-05;
+
+vector<double> original_features;
+int check_num;
+int original_class;
+{% endif %}
+
+double feature_importances[] = {{ feature_importances }};
+double prior_mutate_chances[] = {{ mutate_chances }};
+
+std::default_random_engine en;
+std::uniform_real_distribution<double> uniform_dist(0, 1);
+
+{% if mutate == 'RANDOM' %}
+std::uniform_real_distribution<double> mutation_dist(-1, 1);
+{% endif %}
+{% if mutate == 'GAUSSIAN' %}
+std::normal_distribution<double> mutation_dist(0, 0.34);
+{% endif %}
+
+{% if use_crossover and use_custom_mutator and fuzzer != 'AFL' %}
+std::uniform_int_distribution<int> crossover_dist(0, {{ num_features }});
+
+extern "C" size_t LLVMFuzzerCustomCrossOver(const uint8_t *Data1, size_t Size1,
+                             const uint8_t *Data2, size_t Size2,
+                             uint8_t *Out, size_t MaxOutSize,
+                             unsigned int Seed) {
+{#    return Size2;#}
+    en.seed(Seed);
+    int split_index = crossover_dist(en);
+    int split_length = split_index*sizeof(double);
+    memcpy(Out, Data1, split_length);
+    memcpy(Out + split_length, Data2 + split_length, Size2 - split_length);
+    return Size2;
+}
+{% endif %}
+
+{% if use_thresholds %}
+vector<vector<double>> thresholds_per_feature;
+{{ threshold_vectors }}
+
+{# Muteer de feature (f) gewoon via een gaussian distribution -> r
+{#            Met e=small_perturbation_thres,
+{#            Voor r < f:
+{#                Zoek dan de kleinste threshold t waarvoor geldt r < t - e < f
+{#            Voor r > f:
+{#                Zoek dan de grootste threshold t waarvoor geldt f < t + e < r
+{#            Dit zoekt de meest voordelige kant van de threshold, en zorgt ervoor dat we niet verder
+{#            van de threshold zitten dan noodzakelijk. Op punt r gaan zitten is "zonde", want je kan
+{#            dichterbij het originele punt gaan zitten met dezelfde uitkomst (maar minder distance).#}
+
+double find_closest_threshold(double mutated, int fi) {
+    vector<double> thresholds = thresholds_per_feature[fi];
+    double original = original_features[fi];
+    if (mutated < original) {
+        for (double threshold : thresholds) {
+            if (threshold > original) {
+                break;
+            }
+            if (mutated < threshold - min_e && threshold - min_e < original) {
+                return threshold - min_e;
+            }
+        }
+        return original;
+    } else if (mutated > original) {
+        for (auto threshold = thresholds.rbegin(); threshold != thresholds.rend(); ++threshold) {
+            if (*threshold < original) {
+                break;
+            }
+            if (original < *threshold + min_e && *threshold + min_e < mutated) {
+                return *threshold + min_e;
+            }
+        }
+        return original;
+    } else {
+        return original;
+    }
+}
+{% endif %}
+
+{% if fuzzer == 'AFL' %}
+std::string getEnvVar( std::string const & key ) {
+    char * val = getenv( key.c_str() );
+    return val == NULL ? std::string("") : std::string(val);
+}
+
+
+template <typename Out>
+void split(const std::string &s, char delim, Out result) {
+    std::istringstream iss(s);
+    std::string item;
+    while (std::getline(iss, item, delim)) {
+        *result++ = item;
+    }
+}
+
+std::vector<std::string> split(const std::string &s, char delim) {
+    std::vector<std::string> elems;
+    split(s, delim, std::back_inserter(elems));
+    return elems;
+}
+
+extern "C" void *afl_custom_init(void *param, unsigned int seed) {
+    en.seed(seed);
+    {% if use_thresholds %}
+    {{ threshold_init }}
+    {% endif %}
+
+    check_num = stoi(getEnvVar("CHECK_NUM"));
+    int num_features = stoi(getEnvVar("NUM_FEATURES"));
+    original_class = stoi(getEnvVar("ORIGINAL_CLASS"));
+    auto of = getEnvVar("ORIGINAL_FEATURES");
+    auto splitted_of = split(of, ' ');
+    vector<double> original(num_features, 0.0);
+
+    for (int i = 0; i < num_features; i++) {
+        original[i] = stod(splitted_of[i]);
+    }
+    original_features = original;
+
+    return calloc(1, sizeof(double));
+}
+
+extern "C" void afl_custom_deinit(void *data) {}
+{% endif %}
+
+double mutate(double original, int index, double biggest_dist, bool is_ae) {
+    {% if steep_curve %}
+    double md = mutation_dist(en);
+    double m = pow(md, 2.0);
+    if (md < 0) {
+        m = -m;
+    }
+    {% else %}
+    double m = mutation_dist(en);
+    {% endif %}
+    if (original > 0.9999) {
+        m = -abs(m);
+    }
+    if (original < 0.0001) {
+        m = abs(m);
+    }
+    double mutated = original + m * biggest_dist * {{ epsilon }};
+    mutated = min((double)1.0, mutated);
+    mutated = max((double)0.0, mutated);
+    {% if use_thresholds %}
+    if (is_ae) {
+        double nearest_threshold = find_closest_threshold(mutated, index);
+        return nearest_threshold;
+    }
+    return mutated;
+    {% else %}
+    return mutated;
+    {% endif %}
+}
+
+double mutate_towards_original(double f_mutated, double f_original, int index, bool is_ae) {
+    // 2 * difference because it may be the case that we have to "overshoot" the original
+    double perturbation = abs(mutation_dist(en)) * {{ epsilon }} * 2 * abs(f_mutated - f_original);
+    double mutated;
+    if (f_original > f_mutated) {
+        mutated = f_mutated + perturbation;
+    } else {
+        mutated = f_mutated - perturbation;
+    }
+    mutated = min((double)1.0, mutated);
+    mutated = max((double)0.0, mutated);
+    {% if use_thresholds %}
+    if (is_ae) {
+        double nearest_threshold = find_closest_threshold(mutated, index);
+        return nearest_threshold;
+    }
+    return mutated;
+    {% else %}
+    return mutated;
+    {% endif %}
+}
+
+{% if bias_big_diff_features %}
+double sum_distance(double fuzzed[]) {
+    double summed = 0.0;
+    for (int i = 0; i < {{ num_features }}; i++) {
+        double f_original = original_features[i];
+        double f_fuzzed = fuzzed[i];
+        double diff = abs(f_original - f_fuzzed);
+        summed += diff;
+    }
+    return summed;
+}
+{% endif %}
+
+{% if fuzz == 'ONE' %}
+double distance_linf(double fuzzed[]) {
+{% endif %}
+{% if fuzz == 'MULTIPLE' %}
+double distance_linf(double fuzzed[], double original_features[]) {
+{% endif %}
+    double max_diff = 0.0;
+    for (int i = 0; i < {{ num_features }}; i++) {
+        double f_original = original_features[i];
+        double f_fuzzed = fuzzed[i];
+        double diff = abs(f_original - f_fuzzed);
+        if (diff > max_diff) {
+            max_diff = diff;
+        }
+    }
+    return max_diff;
+}
+
+double* mutate_biggest_diff_features_l_inf(double fs[], double biggest_diff) {
+    for (int i = 0; i < {{ num_features }}; i++) {
+        double f_original = original_features[i];
+        double f_mutated = fs[i];
+        double diff = abs(f_original - f_mutated);
+        if (diff > (biggest_diff - 0.01)) {
+            // In this function, it is always an AE to is_ae is set to true
+            double better = mutate_towards_original(f_mutated, f_original, i, true);
+            fs[i] = better;
+        }
+    }
+    return fs;
+}
+
+{% if use_custom_mutator %}
+{% if fuzzer == 'AFL' %}
+extern "C" size_t afl_custom_fuzz(void *mutator_instance, uint8_t *Data, size_t Size,
+    uint8_t **outData, uint8_t *additional_buf, size_t add_buf_size, size_t MaxSize) {
+{% else %}
+extern "C" size_t LLVMFuzzerCustomMutator(uint8_t *Data, size_t Size, size_t MaxSize, unsigned int Seed) {
+{#    return Size;#}
+    en.seed(Seed);
+    // Sanity check
+    if (Size != MaxSize) {
+        if (Size != 0) {
+            printf("size %ld\n", Size);
+            abort();
+        }
+        return Size;
+    }
+{% endif %}
+
+    // Unpack data to doubles
+    double fs[{{ num_features }}];
+    for (int i = 0; i < {{ num_features }}; i++) {
+        fs[i] = *(double *)(Data + i*sizeof(double));
+    }
+
+    bool is_ae = false;
+    {% if use_was_ae %}
+    is_ae = was_ae;
+    {% elif fuzzer == 'AFL' or fake_is_ae %}
+    if (uniform_dist(en) < {{ is_ae_chance }}) {
+        is_ae = true;
+    }
+    {% else %}
+    {% if ae_check_in_mutate %}
+    auto probs = predict_probs(fs);
+    int fuzzed_class = predict(probs);
+    is_ae = fuzzed_class != original_class;
+    {% endif %}
+    {% endif %}
+
+    double biggest_dist = 1.0;
+    {% if fuzz == 'ONE' %}
+    if (is_ae) {
+        biggest_dist = distance_linf(fs);
+    }
+    {% endif %}
+
+    {% if bias_big_diff_features %}
+    double sum_of_dist = sum_distance(fs);
+    {% endif %}
+
+    {% if also_mutate_biggest %}
+    double mutate_biggest_chance = {{ mutate_biggest_chance }};
+    if (is_ae && biggest_dist > 0.001 && uniform_dist(en) < mutate_biggest_chance) {
+        mutate_biggest_diff_features_l_inf(fs, biggest_dist);
+        for (int i = 0; i < {{ num_features }}; i++) {
+            ((double *)(Data + i*sizeof(double)))[0] = fs[i];
+        }
+    } else {
+    {% endif %}
+    for (int i = 0; i < {{ num_features }}; i++) {
+        // int index = feature_dist(en);
+        // ((double *)(Data+index*sizeof(double)))[0] = mutate(fs[index], index);
+
+        double chance = prior_mutate_chances[i];
+        double chance_count = 1.0;
+        {% if use_feature_importances %}
+        chance_count++;
+        chance += feature_importances[i];
+        {% endif %}
+        {% if bias_big_diff_features %}
+        if (is_ae && biggest_dist > 0.00001) {
+            chance_count++;
+            double diff = abs(fs[i] - original_features[i]);
+            chance += diff/sum_of_dist;
+        }
+        {% endif %}
+        chance = chance / chance_count;
+        if (uniform_dist(en) < chance) {
+            double mutated_val;
+            {% if mutate_less_when_closer %}
+            mutated_val = mutate(fs[i], i, biggest_dist, is_ae);
+            {% elif ae_mutate_towards_original %}
+            if (is_ae) {
+                mutated_val = mutate_towards_original(fs[i], original_features[i], i, is_ae);
+            } else {
+                mutated_val = mutate(fs[i], i, 1, is_ae);
+            }
+            {% else %}
+            mutated_val = mutate(fs[i], i, 1, is_ae);
+            {% endif %}
+            ((double *)(Data + i*sizeof(double)))[0] = mutated_val;
+        }
+    }
+    {% if also_mutate_biggest %} } {% endif %}
+    {% if fuzzer == 'AFL' %}
+    *outData = (unsigned char*) malloc(Size);
+    memcpy(*outData, Data, Size);
+    {% endif %}
+
+    return Size;
+}
+{% endif %}
